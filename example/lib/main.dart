@@ -1,11 +1,15 @@
 // lib/main.dart
 
+// Dart imports:
+import 'dart:typed_data';
+
 // Flutter imports:
 import 'package:flutter/material.dart';
 // Package imports:
 import 'package:permission_handler/permission_handler.dart';
 import 'package:vad/vad.dart';
 // Project imports:
+import 'package:vad_example/custom_audio_stream_provider.dart';
 import 'package:vad_example/recording.dart';
 import 'package:vad_example/ui/app_theme.dart';
 import 'package:vad_example/ui/vad_ui.dart';
@@ -45,6 +49,9 @@ class _VadManagerState extends State<VadManager> {
   final VadUIController _uiController = VadUIController();
   int _chunkCounter = 0;
 
+  // Custom audio stream provider
+  CustomAudioStreamProvider? _customAudioProvider;
+
   @override
   void initState() {
     super.initState();
@@ -59,6 +66,21 @@ class _VadManagerState extends State<VadManager> {
 
   void _startListening() async {
     _chunkCounter = 0; // Reset chunk counter for new session
+
+    // Initialize and start custom audio provider if needed
+    Stream<Uint8List>? customAudioStream;
+    if (settings.useCustomAudioStream) {
+      try {
+        _customAudioProvider = CustomAudioStreamProvider();
+        await _customAudioProvider!.initialize();
+        await _customAudioProvider!.startRecording();
+        customAudioStream = _customAudioProvider!.audioStream;
+      } catch (e) {
+        // Fall back to built-in recorder
+        customAudioStream = null;
+      }
+    }
+
     await _vadHandler.startListening(
       frameSamples: settings.frameSamples,
       minSpeechFrames: settings.minSpeechFrames,
@@ -69,24 +91,27 @@ class _VadManagerState extends State<VadManager> {
       negativeSpeechThreshold: settings.negativeSpeechThreshold,
       submitUserSpeechOnPause: settings.submitUserSpeechOnPause,
       model: settings.modelString,
-      numFramesToEmit: settings.enableChunkEmission ? settings.numFramesToEmit : 0,
-      recordConfig: const RecordConfig(
+      numFramesToEmit:
+          settings.enableChunkEmission ? settings.numFramesToEmit : 0,
+      audioStream: customAudioStream, // Pass custom stream if available
+      recordConfig: RecordConfig(
         encoder: AudioEncoder.pcm16bits,
         echoCancel: true,
         autoGain: true,
         noiseSuppress: true,
-        androidConfig: AndroidRecordConfig(
+        androidConfig: const AndroidRecordConfig(
           speakerphone: true,
           audioSource: AndroidAudioSource.voiceCommunication,
           audioManagerMode: AudioManagerMode.modeInCommunication,
         ),
         iosConfig: IosRecordConfig(
-          categoryOptions: [
+          categoryOptions: const [
             IosAudioCategoryOption.defaultToSpeaker,
             IosAudioCategoryOption.allowBluetooth,
             IosAudioCategoryOption.allowBluetoothA2DP,
           ],
-          manageAudioSession: true,
+          // When using custom audio stream, that provider manages the session
+          manageAudioSession: customAudioStream == null,
         ),
       ),
       // baseAssetPath: '/assets/', // Alternative to using the CDN (see README.md)
@@ -98,8 +123,15 @@ class _VadManagerState extends State<VadManager> {
     });
   }
 
-  void _stopListening() async {
+  Future<void> _stopListening() async {
     await _vadHandler.stopListening();
+
+    // Clean up custom audio provider if it was used
+    if (_customAudioProvider != null) {
+      await _customAudioProvider!.dispose();
+      _customAudioProvider = null;
+    }
+
     setState(() {
       isListening = false;
       isPaused = false;
@@ -197,17 +229,12 @@ class _VadManagerState extends State<VadManager> {
 
     // If we're currently listening, stop first
     if (isListening) {
-      await _vadHandler.stopListening();
-      setState(() {
-        isListening = false;
-        isPaused = false;
-      });
+      await _stopListening(); // Use _stopListening to properly clean up custom audio provider
     }
 
     // Update settings
     setState(() {
       settings = newSettings;
-      print('settings: $settings');
     });
 
     // Restart listening if it was previously active
@@ -256,6 +283,7 @@ class _VadManagerState extends State<VadManager> {
       _vadHandler.stopListening();
     }
     _vadHandler.dispose();
+    _customAudioProvider?.dispose();
     _uiController.dispose();
     super.dispose();
   }

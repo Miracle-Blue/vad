@@ -7,9 +7,13 @@
 </p>
 
 
-VAD is a Flutter library for Voice Activity Detection (VAD) across **iOS** , **Android** , and **Web**  platforms. This package allows applications to start and stop VAD-based listening and handle various VAD events seamlessly.
-Under the hood, the VAD Package uses `dart:js_interop` for Web to run [VAD JavaScript library](https://github.com/ricky0123/vad) and [onnxruntime](https://github.com/gtbluesky/onnxruntime_flutter) for iOS and Android utilizing onnxruntime library with full-feature parity with the JavaScript library.
+VAD is a Flutter library for Voice Activity Detection (VAD) across **iOS**, **Android**, **Web**, **macOS**, **Windows**, and **Linux** platforms. This package allows applications to start and stop VAD-based listening and handle various VAD events seamlessly.
+
+Under the hood, the VAD Package uses direct FFI bindings to ONNX Runtime for native platforms (iOS, Android, macOS, Windows, Linux) and `dart:js_interop` for Web. All platforms utilize the Silero VAD models with full-feature parity across platforms.
+
 The package provides a simple API to start and stop VAD listening, configure VAD parameters, and handle VAD events such as speech start, speech end, errors, and misfires.
+
+**Note:** Echo cancellation is not available on Windows and Linux platforms due to limitations in the underlying audio capture library.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/keyur2maru/vad/master/img/screenshot-1.png" alt="Screenshot 1" />
@@ -58,7 +62,6 @@ The package provides a simple API to start and stop VAD listening, configure VAD
         + [iOS Issues](#ios-issues)
             - [TestFlight Build Error: "Failed to lookup symbol 'OrtGetApiBase'"](#testflight-build-error-failed-to-lookup-symbol-ortgetapibase)
         + [Android Issues](#android-issues)
-            - [Missing libonnxruntime.so Library Error](#missing-libonnxruntimeso-library-error)
             - [Echo Cancellation Not Working on Some Android Devices](#echo-cancellation-not-working-on-some-android-devices)
     * [Tested Platforms](#tested-platforms)
     * [Contributing](#contributing)
@@ -72,11 +75,15 @@ Check out the [VAD Package Example App](https://keyur2maru.github.io/vad/) to se
 
 ## Features
 
-- **Cross-Platform Support:**  Works seamlessly on iOS, Android, and Web.
+- **Cross-Platform Support:**  Works seamlessly on iOS, Android, Web, macOS, Windows, and Linux.
 
 - **Event Streams:**  Listen to events such as speech start, real speech start, speech end, speech misfire, frame processed, and errors.
 
 - **Silero V4 and V5 Models:**  Supports both Silero VAD v4 and v5 models.
+
+- **16KB Page Size Support:**  Native Android libraries are properly aligned for 16KB page sizes, meeting Google Play requirements for Android 15+ devices.
+
+- **Custom Audio Streams:**  Provide your own audio stream for advanced use cases like custom recording configurations or processing audio from non-microphone sources.
 
 ## Getting Started
 
@@ -384,7 +391,7 @@ Notes:
 - `model` parameter can be set to 'legacy' or 'v5' to use the respective VAD model. Default is 'legacy'.
 - `baseAssetPath` specifies the base URL/path for VAD model files (.onnx). Defaults to CDN (`https://cdn.jsdelivr.net/npm/@keyurmaru/vad@0.0.1/`) but can be overridden for custom hosting. **<u>Applicable for all platforms.</u>**
 - `onnxWASMBasePath` specifies the base URL/path for onnxruntime WASM files. Defaults to CDN (`https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/`) but can be overridden for custom hosting. **<u>Only applicable for the Web platform.</u>**
-- `recordConfig` allows you to provide custom recording configuration for non-web platforms (iOS/Android). If not provided, default configuration with 16kHz sample rate, PCM16 encoding, echo cancellation, auto gain, and noise suppression will be used. **<u>Only applicable for non-web platforms (iOS/Android).</u>**
+- `recordConfig` allows you to provide custom recording configuration for native platforms (iOS, Android, macOS, Windows, Linux). If not provided, default configuration with 16kHz sample rate, PCM16 encoding, echo cancellation, auto gain, and noise suppression will be used. **<u>Only applicable for native platforms. Note: Echo cancellation is not available on Windows and Linux.</u>**
 
 ```dart
 Future<void> startListening({
@@ -399,8 +406,54 @@ Future<void> startListening({
   String baseAssetPath = 'https://cdn.jsdelivr.net/npm/@keyurmaru/vad@0.0.1/',
   String onnxWASMBasePath = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/',
   RecordConfig? recordConfig,
+  Stream<Uint8List>? audioStream,
 });
 ```
+
+**Custom Audio Stream:**
+- `audioStream` allows you to provide your own audio stream instead of using the built-in recorder. When provided, VadHandler will process audio from this stream instead of creating its own AudioRecorder. The stream should provide PCM16 audio data at 16kHz sample rate, mono channel. This is useful for:
+  - Custom recording configurations not supported by the default recorder
+  - Processing audio from non-microphone sources (files, network streams, etc.)
+  - Integration with existing audio pipelines in your application
+
+Example usage with custom audio stream:
+```dart
+import 'dart:typed_data';
+import 'package:record/record.dart';
+
+// Create your custom audio stream provider
+class CustomAudioProvider {
+  AudioRecorder? _recorder;
+  Stream<Uint8List>? _stream;
+
+  Future<void> initialize() async {
+    _recorder = AudioRecorder();
+    const config = RecordConfig(
+      encoder: AudioEncoder.pcm16bits,
+      sampleRate: 16000,
+      numChannels: 1,
+    );
+    _stream = await _recorder!.startStream(config);
+  }
+
+  Stream<Uint8List>? get audioStream => _stream;
+
+  Future<void> dispose() async {
+    await _recorder?.dispose();
+  }
+}
+
+// Use it with VadHandler
+final provider = CustomAudioProvider();
+await provider.initialize();
+
+await vadHandler.startListening(
+  audioStream: provider.audioStream,  // Pass your custom stream
+  // ... other parameters
+);
+```
+
+See the [example app's CustomAudioStreamProvider](https://github.com/keyur2maru/vad/blob/master/example/lib/custom_audio_stream_provider.dart) for a complete implementation.
 
 #### `stopListening`
 Stops the VAD session. Returns a `Future<void>` that completes when the VAD session has stopped.
@@ -504,48 +557,11 @@ flutter: VAD model initialization failed: Invalid argument(s): Failed to lookup 
 
 ### Android Issues
 
-#### Missing libonnxruntime.so Library Error
-
-Some Android devices may report this error:
-```
-VAD model initialization failed: Invalid argument(s): Failed to load dynamic library 'libonnxruntime.so': dlopen failed: library "libonnxruntime.so" not found
-```
-
-**Fix:** Use a specific commit of the onnxruntime package by adding this to your `pubspec.yaml`:
-
-```yaml
-dependency_overrides:
-  onnxruntime:
-    git:
-      url: https://github.com/gtbluesky/onnxruntime_flutter.git
-      ref: 526de653892a84af3e1a541e49d4f4b3042bb2cd
-```
-
-*Solution found at: https://github.com/gtbluesky/onnxruntime_flutter/pull/31*
-
 #### Echo Cancellation Not Working on Some Android Devices
 
 Some Android devices, particularly Samsung devices (e.g., Samsung S20), may experience issues with echo cancellation not functioning properly, while the same code works fine on other devices (e.g., Lenovo Tab M8).
 
-**Fix:** Use a patched version of the record package with improved audio configuration. Add this to your `pubspec.yaml`:
-
-```yaml
-dependency_overrides:
-  record:
-    git:
-      url: https://github.com/keyur2maru/record.git
-      path: record
-  record_platform_interface:
-    git:
-      url: https://github.com/keyur2maru/record.git
-      path: record_platform_interface
-  record_android:
-    git:
-      url: https://github.com/keyur2maru/record.git
-      path: record_android
-```
-
-**Usage example:**
+**Fix:** Configure Android-specific audio settings in the RecordConfig. The VAD package uses improved audio configuration by default, but you can also customize it:
 
 ```dart
 await _vadHandler.startListening(
@@ -559,29 +575,30 @@ await _vadHandler.startListening(
     androidConfig: AndroidRecordConfig(
       audioSource: AndroidAudioSource.voiceCommunication,
       audioManagerMode: AudioManagerMode.modeInCommunication,
-      setSpeakerphoneOn: true,
+      speakerphone: true,
+      manageBluetooth: true,
     ),
   ),
 );
 ```
 
-This fix leverages `AudioManager.MODE_IN_COMMUNICATION` and `AudioManager.setSpeakerPhone(true)` along with the `android.permission.MODIFY_AUDIO_SETTINGS` permission to resolve echo cancellation issues.
-
-*Note: An official fix is pending in the upstream record package: https://github.com/llfbandit/record/commit/a24931a8e344410b68f36b1182a600f4e33bff42*
-
+This configuration leverages `AudioManager.MODE_IN_COMMUNICATION` and speakerphone mode along with the `android.permission.MODIFY_AUDIO_SETTINGS` permission to resolve echo cancellation issues. The VAD package uses these settings by default.
 
 ## Tested Platforms
 The VAD Package has been tested on the following platforms:
 
 - **iOS:**  Tested on iPhone 15 Pro Max running iOS 18.1.
-- **Android:**  Tested on Lenovo Tab M8 Running Android 10.
+- **Android:**  Tested on Lenovo Tab M8 running Android 10, Samsung S20 running Android 15.
 - **Web:**  Tested on Chrome Mac/Windows/Android/iOS, Safari Mac/iOS.
+- **macOS:**  Tested on macOS Sequoia 15.1.
+- **Windows:**  Tested on Windows 11.
+- **Linux:**  Tested on Ubuntu 24.04.
 
 ## Contributing
 Contributions are welcome! Please feel free to submit a pull request or open an issue if you encounter any problems or have suggestions for improvements.
 
 ## Acknowledgements
-Special thanks to [Ricky0123](https://github.com/ricky0123) for creating the [VAD JavaScript library](https://github.com/ricky0123/vad), [gtbluesky](https://github.com/gtbluesky) for building the [onnxruntime package](https://github.com/gtbluesky/onnxruntime_flutter) and Silero Team for the [VAD model](https://github.com/snakers4/silero-vad) used in the library.
+Special thanks to [Ricky0123](https://github.com/ricky0123) for creating the [VAD JavaScript library](https://github.com/ricky0123/vad), the Silero Team for the [VAD model](https://github.com/snakers4/silero-vad) used in the library, and Microsoft for the [ONNX Runtime](https://github.com/microsoft/onnxruntime) that powers the model inference.
 
 
 ## License
