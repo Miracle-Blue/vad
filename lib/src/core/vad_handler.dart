@@ -7,17 +7,16 @@ import 'dart:async';
 
 // Package imports:
 import 'package:record/record.dart';
-
+import 'package:vad/src/core/vad_event.dart';
 // Project imports:
 import 'package:vad/src/core/vad_iterator.dart';
-import 'package:vad/src/core/vad_event.dart';
 
 /// Platform-agnostic Voice Activity Detection handler for real-time audio processing
 ///
 /// Provides cross-platform VAD capabilities using Silero models with unified
 /// implementation using the record library for both web and native platforms.
 class VadHandler {
-  final AudioRecorder _audioRecorder = AudioRecorder();
+  AudioRecorder? _audioRecorder;
   VadIterator? _vadIterator;
   StreamSubscription<List<int>>? _audioStreamSubscription;
 
@@ -25,6 +24,7 @@ class VadHandler {
   bool _isInitialized = false;
   bool _submitUserSpeechOnPause = false;
   bool _isPaused = false;
+  bool _isRecorderDisposed = true;
 
   // Track current model parameters to detect changes
   String? _currentModel;
@@ -40,8 +40,8 @@ class VadHandler {
   int? _currentNumFramesToEmit;
 
   final _onSpeechEndController = StreamController<List<double>>.broadcast();
-  final _onFrameProcessedController = StreamController<
-      ({double isSpeech, double notSpeech, List<double> frame})>.broadcast();
+  final _onFrameProcessedController =
+      StreamController<({double isSpeech, double notSpeech, List<double> frame})>.broadcast();
   final _onSpeechStartController = StreamController<void>.broadcast();
   final _onRealSpeechStartController = StreamController<void>.broadcast();
   final _onVADMisfireController = StreamController<void>.broadcast();
@@ -58,8 +58,8 @@ class VadHandler {
   Stream<List<double>> get onSpeechEnd => _onSpeechEndController.stream;
 
   /// Stream of frame processing events with speech probabilities and raw frame data
-  Stream<({double isSpeech, double notSpeech, List<double> frame})>
-      get onFrameProcessed => _onFrameProcessedController.stream;
+  Stream<({double isSpeech, double notSpeech, List<double> frame})> get onFrameProcessed =>
+      _onFrameProcessedController.stream;
 
   /// Stream of initial speech start detection events
   Stream<void> get onSpeechStart => _onSpeechStartController.stream;
@@ -147,10 +147,8 @@ class VadHandler {
       int minSpeechFrames = 3,
       bool submitUserSpeechOnPause = false,
       String model = 'v4',
-      String baseAssetPath =
-          'https://cdn.jsdelivr.net/npm/@keyurmaru/vad@0.0.1/',
-      String onnxWASMBasePath =
-          'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/',
+      String baseAssetPath = 'https://cdn.jsdelivr.net/npm/@keyurmaru/vad@0.0.1/',
+      String onnxWASMBasePath = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/',
       RecordConfig? recordConfig,
       int endSpeechPadFrames = 1,
       int numFramesToEmit = 0}) async {
@@ -261,7 +259,16 @@ class VadHandler {
       print('VadHandler: Checking audio permissions');
     }
 
-    bool hasPermission = await _audioRecorder.hasPermission();
+    // Create a new AudioRecorder if needed
+    if (_audioRecorder == null || _isRecorderDisposed) {
+      if (_isDebug) {
+        print('VadHandler: Creating new AudioRecorder instance');
+      }
+      _audioRecorder = AudioRecorder();
+      _isRecorderDisposed = false;
+    }
+
+    bool hasPermission = await _audioRecorder!.hasPermission();
     if (!hasPermission) {
       _onErrorController.add('VadHandler: No permission to record audio.');
       print('VadHandler: No permission to record audio.');
@@ -292,7 +299,7 @@ class VadHandler {
     }
 
     try {
-      final stream = await _audioRecorder.startStream(config);
+      final stream = await _audioRecorder!.startStream(config);
 
       _audioStreamSubscription = stream.listen((data) async {
         if (!_isPaused) {
@@ -326,9 +333,15 @@ class VadHandler {
         _audioStreamSubscription = null;
       }
 
-      if (_isDebug) print('VadHandler: Stopping audio recorder');
-      await _audioRecorder.stop();
-      await _audioRecorder.dispose();
+      if (_audioRecorder != null && !_isRecorderDisposed) {
+        if (_isDebug) print('VadHandler: Stopping audio recorder');
+        try {
+          await _audioRecorder!.stop();
+        } catch (e) {
+          if (_isDebug) print('VadHandler: Error stopping recorder: $e');
+          // Ignore errors if recorder is already stopped
+        }
+      }
 
       if (_isDebug) print('VadHandler: Resetting VAD iterator');
       _vadIterator?.reset();
@@ -357,8 +370,16 @@ class VadHandler {
     if (_isDebug) print('VadHandler: stopping listening');
     await stopListening();
 
-    if (_isDebug) print('VadHandler: disposing audio recorder');
-    await _audioRecorder.dispose();
+    if (_audioRecorder != null && !_isRecorderDisposed) {
+      if (_isDebug) print('VadHandler: disposing audio recorder');
+      try {
+        await _audioRecorder!.dispose();
+        _isRecorderDisposed = true;
+      } catch (e) {
+        if (_isDebug) print('VadHandler: Error disposing recorder: $e');
+        // Recorder might already be disposed
+      }
+    }
 
     if (_isDebug) {
       print('VadHandler: canceling audio stream subscription');

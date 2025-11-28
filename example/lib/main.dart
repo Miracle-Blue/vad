@@ -2,11 +2,9 @@
 
 // Flutter imports:
 import 'package:flutter/material.dart';
-
 // Package imports:
 import 'package:permission_handler/permission_handler.dart';
 import 'package:vad/vad.dart';
-
 // Project imports:
 import 'package:vad_example/recording.dart';
 import 'package:vad_example/ui/app_theme.dart';
@@ -71,13 +69,9 @@ class _VadManagerState extends State<VadManager> {
       negativeSpeechThreshold: settings.negativeSpeechThreshold,
       submitUserSpeechOnPause: settings.submitUserSpeechOnPause,
       model: settings.modelString,
-      numFramesToEmit:
-          settings.enableChunkEmission ? settings.numFramesToEmit : 0,
+      numFramesToEmit: settings.enableChunkEmission ? settings.numFramesToEmit : 0,
       recordConfig: const RecordConfig(
         encoder: AudioEncoder.pcm16bits,
-        sampleRate: 16000,
-        bitRate: 16,
-        numChannels: 1,
         echoCancel: true,
         autoGain: true,
         noiseSuppress: true,
@@ -204,8 +198,10 @@ class _VadManagerState extends State<VadManager> {
     // If we're currently listening, stop first
     if (isListening) {
       await _vadHandler.stopListening();
-      isListening = false;
-      isPaused = false;
+      setState(() {
+        isListening = false;
+        isPaused = false;
+      });
     }
 
     // Update settings
@@ -214,11 +210,8 @@ class _VadManagerState extends State<VadManager> {
       print('settings: $settings');
     });
 
-    // Dispose and recreate VAD handler
-    await _vadHandler.dispose();
-    _initializeVad();
-
     // Restart listening if it was previously active
+    // VadHandler will automatically recreate the VadIterator if parameters changed
     if (wasListening) {
       _startListening();
     }
